@@ -1,0 +1,28 @@
+{
+  "ask": [
+    {"question": "Which job requires Thai language?", "must_include": ["Lanna Logistics"]},
+    {"question": "What is the salary range for the AI Engineer role?", "must_include": ["45,000", "60,000"]},
+    {"question": "Which job is a contract and how long is it?", "must_include": ["6"]},
+    {"question": "How much time did Alex's n8n automation save?", "must_include": ["4 hours"]},
+    {"question": "Which vector databases does Nimbus Rentals mention?", "must_include": ["pgvector"]},
+    {"question": "Where is the Go backend role located?", "must_include": ["Chiang Mai"]},
+    {"question": "What payment work has Alex done?", "must_include": ["payment"]},
+    {"question": "Does Alex know Kubernetes?", "must_include_any": ["n't", "not", "no "]},
+    {"question": "What is the company's office address for Siam Pixel Studio?", "must_include_any": ["n't", "not", "no "]},
+    {"question": "Which frontend framework does the contract role require?", "must_include": ["Next.js"]}
+  ],
+  "extract": [
+    {
+      "file": "job_ai_engineer.md",
+      "expected": {"thai_language_required": false, "min_years_experience": 2, "salary_min_thb": 45000, "salary_max_thb": 60000}
+    },
+    {
+      "file": "job_backend_go.md",
+      "expected": {"thai_language_required": true, "min_years_experience": 5, "salary_min_thb": 70000, "salary_max_thb": 90000}
+    },
+    {
+      "file": "job_frontend_contract.md",
+      "expected": {"thai_language_required": false, "min_years_experience": 3, "salary_min_thb": 40000, "salary_max_thb": 50000}
+    }
+  ]
+}
