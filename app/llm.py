@@ -5,7 +5,7 @@ from typing import Protocol
 import anthropic
 
 from .config import settings
-from .schemas import AskResponse, Chunk, Citation, JobPosting, MatchResult
+from .schemas import AskResponse, Chunk, Citation, FitReport, JobPosting, MatchResult
 
 ANSWER_SYSTEM = (
     "You answer questions about the documents provided (resumes and job postings). "
@@ -26,6 +26,30 @@ MATCH_SYSTEM = (
     "language, location or seniority mismatches. Base everything on the text provided."
 )
 
+ANALYZE_SYSTEM = (
+    "You help a job seeker decide whether to apply for a job. Do two things:\n"
+    "1. Extract the job's key facts. Use only what the posting states and null for anything "
+    "not mentioned. Convert salaries to monthly Thai baht. Mark thai_language_required true "
+    "only if the posting asks for Thai language ability.\n"
+    "2. Compare the candidate's resume with the job like a fair, practical recruiter: score fit "
+    "from 0 to 100, list required skills the resume clearly shows, list required skills it "
+    "doesn't show, and flag blockers such as language, location, seniority or salary mismatch.\n"
+    "Then give a verdict (strong, possible or weak) with one sentence addressed to the candidate "
+    "as 'you'. Base everything on the text provided; never assume skills the resume doesn't show."
+)
+
+COVER_LETTER_SYSTEM = (
+    "You write short, professional cover letters for job applications. Rules:\n"
+    "- 120 to 170 words, plain text, no markdown, no placeholders in square brackets.\n"
+    "- Open with the role and why the candidate fits; then two or three concrete achievements "
+    "from the resume that match the job; then a one-line close.\n"
+    "- Only mention skills and experience that appear in the resume. Never invent numbers, "
+    "employers or skills.\n"
+    "- Address it to 'Dear Hiring Team,' and sign off with 'Best regards,' followed by the "
+    "candidate's name if given, otherwise the name from the resume.\n"
+    "Output only the letter."
+)
+
 
 class ClaudeRefusalError(RuntimeError):
     pass
@@ -37,6 +61,10 @@ class LLM(Protocol):
     def extract_job(self, job_text: str) -> JobPosting: ...
 
     def match(self, resume_text: str, job_text: str) -> MatchResult: ...
+
+    def analyze(self, resume_text: str, job_text: str) -> FitReport: ...
+
+    def cover_letter(self, resume_text: str, job_text: str, candidate_name: str | None) -> str: ...
 
 
 class ClaudeService:
@@ -66,10 +94,8 @@ class ClaudeService:
             max_tokens=16000,
             system=ANSWER_SYSTEM,
             output_config={"effort": "medium"},
-            # If a request is declined, the API retries it on a recommended fallback model.
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
             messages=[{"role": "user", "content": [*documents, {"type": "text", "text": question}]}],
+            **_fallback_args(self.model),
         )
         if response.stop_reason == "refusal":
             raise ClaudeRefusalError("Claude declined to answer this question.")
@@ -117,8 +143,53 @@ class ClaudeService:
         )
         return self._parsed(response)
 
+    def analyze(self, resume_text: str, job_text: str) -> FitReport:
+        response = self.client.messages.parse(
+            model=self.model,
+            max_tokens=16000,
+            system=ANALYZE_SYSTEM,
+            output_config={"effort": "medium"},
+            messages=[{"role": "user", "content": _resume_and_job(resume_text, job_text)}],
+            output_format=FitReport,
+        )
+        return self._parsed(response)
+
+    def cover_letter(self, resume_text: str, job_text: str, candidate_name: str | None) -> str:
+        content = _resume_and_job(resume_text, job_text)
+        if candidate_name:
+            content += f"\n\nCandidate name: {candidate_name}"
+        response = self.client.beta.messages.create(
+            model=self.model,
+            max_tokens=16000,
+            system=COVER_LETTER_SYSTEM,
+            output_config={"effort": "medium"},
+            messages=[{"role": "user", "content": content}],
+            **_fallback_args(self.model),
+        )
+        if response.stop_reason == "refusal":
+            raise ClaudeRefusalError("Claude declined to write this cover letter.")
+        letter = "".join(block.text for block in response.content if block.type == "text").strip()
+        if not letter:
+            raise ClaudeRefusalError("Claude did not return a cover letter.")
+        return letter
+
     @staticmethod
     def _parsed(response):
         if response.stop_reason == "refusal" or response.parsed_output is None:
             raise ClaudeRefusalError("Claude did not return a result for this request.")
         return response.parsed_output
+
+
+def _resume_and_job(resume_text: str, job_text: str) -> str:
+    return f"<resume>\n{resume_text}\n</resume>\n\n<job_posting>\n{job_text}\n</job_posting>"
+
+
+# Models that accept server-side refusal fallbacks (Haiku models don't).
+_FALLBACK_MODELS = ("claude-fable-5", "claude-opus-5", "claude-sonnet-5-5")
+
+
+def _fallback_args(model: str) -> dict:
+    """If a request is declined, the API retries it on a recommended fallback model."""
+    if model.startswith(_FALLBACK_MODELS):
+        return {"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"}
+    return {}

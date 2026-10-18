@@ -3,9 +3,10 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from app.limits import DailyLimiter
 from app.llm import ClaudeRefusalError
-from app.main import app, get_llm, get_store
-from app.schemas import AskResponse, Chunk, Citation, JobPosting, MatchResult
+from app.main import app, get_limiter, get_llm, get_store
+from app.schemas import AskResponse, Chunk, Citation, FitReport, JobPosting, MatchResult
 
 
 class FakeStore:
@@ -59,16 +60,95 @@ class FakeLLM:
             summary="Good fit.",
         )
 
+    def analyze(self, resume_text, job_text):
+        return FitReport(
+            job=self.extract_job(job_text),
+            match=self.match(resume_text, job_text),
+            verdict="strong",
+            verdict_reason="You match most requirements.",
+        )
+
+    def cover_letter(self, resume_text, job_text, candidate_name):
+        return f"Dear Hiring Team,\n\n...\n\nBest regards,\n{candidate_name or 'Candidate'}"
+
+
+RESUME = "Full-stack developer with Python, React and RAG experience."
+JOB = "AI Engineer in Bangkok. Requires Python and RAG. 40-50k THB."
+
 
 @pytest.fixture
 def client():
     store, llm = FakeStore(), FakeLLM()
     app.dependency_overrides[get_store] = lambda: store
     app.dependency_overrides[get_llm] = lambda: llm
+    app.dependency_overrides[get_limiter] = lambda: DailyLimiter(per_visitor=0, total=0)
     with TestClient(app) as c:
         c.store, c.llm = store, llm
         yield c
     app.dependency_overrides.clear()
+
+
+# ---------- Web app endpoints ----------
+
+def test_parse_resume_returns_text_without_storing(client):
+    res = client.post("/resume/parse", files={"file": ("cv.md", RESUME.encode(), "text/markdown")})
+    assert res.status_code == 200
+    assert res.json()["text"] == RESUME
+    assert client.store.chunks == []
+
+
+def test_parse_resume_rejects_empty_file(client):
+    res = client.post("/resume/parse", files={"file": ("cv.txt", b"   ", "text/plain")})
+    assert res.status_code == 422
+
+
+def test_analyze(client):
+    res = client.post("/analyze", json={"resume_text": RESUME, "job_text": JOB})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["verdict"] == "strong"
+    assert body["match"]["fit_score"] == 80
+    assert body["job"]["thai_language_required"] is False
+
+
+def test_analyze_rejects_too_short_input(client):
+    res = client.post("/analyze", json={"resume_text": "hi", "job_text": JOB})
+    assert res.status_code == 422
+
+
+def test_cover_letter_uses_name(client):
+    res = client.post(
+        "/cover-letter", json={"resume_text": RESUME, "job_text": JOB, "candidate_name": "Thi Han"}
+    )
+    assert res.status_code == 200
+    assert res.json()["cover_letter"].endswith("Thi Han")
+
+
+def test_daily_limit_per_visitor(client):
+    limiter = DailyLimiter(per_visitor=2, total=0)
+    app.dependency_overrides[get_limiter] = lambda: limiter
+    body = {"resume_text": RESUME, "job_text": JOB}
+    assert client.post("/analyze", json=body).status_code == 200
+    assert client.post("/cover-letter", json=body).status_code == 200
+    blocked = client.post("/analyze", json=body)
+    assert blocked.status_code == 429
+    assert "free analyses" in blocked.json()["detail"]
+    assert client.get("/usage").json() == {"limit": 2, "used": 2, "remaining": 0}
+
+
+def test_daily_limit_total_applies_across_visitors(client):
+    limiter = DailyLimiter(per_visitor=0, total=1)
+    app.dependency_overrides[get_limiter] = lambda: limiter
+    body = {"resume_text": RESUME, "job_text": JOB}
+    assert client.post("/analyze", json=body, headers={"x-forwarded-for": "1.1.1.1"}).status_code == 200
+    assert client.post("/analyze", json=body, headers={"x-forwarded-for": "2.2.2.2"}).status_code == 429
+
+
+def test_usage_unlimited_by_default(client):
+    assert client.get("/usage").json() == {"limit": None, "used": 0, "remaining": None}
+
+
+# ---------- Document store and RAG ----------
 
 
 def test_health(client):

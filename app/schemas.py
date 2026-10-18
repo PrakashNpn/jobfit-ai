@@ -1,7 +1,10 @@
 from dataclasses import dataclass
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+from .config import settings
 
 
 class DocType(str, Enum):
@@ -89,3 +92,41 @@ class MatchResult(BaseModel):
     missing_skills: list[str]
     red_flags: list[str] = Field(description="Blockers such as language, location or seniority mismatch")
     summary: str = Field(description="Two or three sentences a recruiter could read")
+
+
+# ---------- Web app: fit check and cover letter ----------
+
+class ResumeParseResponse(BaseModel):
+    filename: str
+    text: str
+    characters: int
+
+
+class AnalyzeRequest(BaseModel):
+    job_text: str = Field(min_length=20, max_length=settings.max_job_chars)
+    resume_text: str = Field(min_length=20, max_length=settings.max_resume_chars)
+
+
+class FitReport(BaseModel):
+    """Everything the web app shows after one analysis (one Claude call)."""
+
+    job: JobPosting
+    match: MatchResult
+    verdict: Literal["strong", "possible", "weak"] = Field(
+        description="strong = apply now; possible = apply but address the gaps; weak = probably skip"
+    )
+    verdict_reason: str = Field(description="One sentence explaining the verdict, written to the candidate")
+
+
+class CoverLetterRequest(AnalyzeRequest):
+    candidate_name: str | None = Field(default=None, max_length=100)
+
+
+class CoverLetterResponse(BaseModel):
+    cover_letter: str
+
+
+class UsageResponse(BaseModel):
+    limit: int | None = Field(description="Daily analyses allowed per visitor; null means unlimited")
+    used: int
+    remaining: int | None

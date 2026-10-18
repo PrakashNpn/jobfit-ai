@@ -1,144 +1,179 @@
 # JobFit AI
 
-A FastAPI service that reads resumes and job postings, answers questions about them with **retrieval-augmented generation (RAG)**, extracts job postings into **structured JSON**, and scores how well a resume fits a job.
+**Paste a job posting. In about 10 seconds, see if it fits your resume, what you're missing, and get a tailored cover letter.**
 
-Built with **Python, FastAPI, LangChain, PostgreSQL + pgvector, and Claude**.
+I built this during my own job search. Checking each posting against my resume, spotting deal-breakers like "Thai language required" or "7+ years", and writing a cover letter took 20–30 minutes per job. JobFit AI does the first pass in seconds, so I can spend my time on the jobs that are worth it.
 
-## What it does
+![JobFit AI home page](docs/screenshot-home.png)
 
-| Endpoint | Purpose |
+## How it works
+
+1. **Add your resume** once: upload a PDF or paste the text. It stays in your browser and is never stored on the server.
+2. **Paste a job posting.**
+3. **Get your fit report:**
+   - a **fit score** (0–100) and a clear verdict: *apply*, *apply and address the gaps*, or *probably skip*
+   - the **key facts**: salary, location, work type, years required, and whether Thai or English is required
+   - **skills you have** and **skills to work on**
+   - **red flags** such as language, location or seniority mismatches
+4. **Write a cover letter** tailored to the job with one click, then edit and copy it.
+
+![Example fit report](docs/screenshot-result.png)
+
+## Tech stack
+
+| Layer | Technology |
 |---|---|
-| `POST /documents` | Upload a PDF, Markdown or text file → split into chunks → embed → store in pgvector |
-| `POST /documents/text` | Same, for raw text in a JSON body |
-| `POST /ask` | Ask a question → retrieve the most relevant chunks → Claude answers **with citations** pointing to the exact source text |
-| `POST /extract` | Job posting text → validated `JobPosting` JSON (title, salary in THB, required skills, years, Thai language required, …) |
-| `POST /match` | Job posting (+ optional resume text) → fit score, matching and missing skills, red flags. With no resume text, it retrieves the most relevant chunks of stored resumes. |
-
-Interactive docs are at `http://localhost:8000/docs` once the server is running.
-
-## Architecture
+| Front end | Next.js 16, React 19, TypeScript, Tailwind CSS |
+| API | Python 3.12, FastAPI, Pydantic |
+| AI | Claude (Anthropic API) with structured outputs and citations |
+| RAG | LangChain, PostgreSQL + pgvector (Supabase), FastEmbed local embeddings |
+| Quality | pytest (22 tests), evaluation suite, GitHub Actions CI |
 
 ```mermaid
 flowchart LR
-    U[Client] -->|upload| API[FastAPI]
-    API --> S[LangChain text splitter]
-    S --> E[FastEmbed embeddings<br/>bge-small-en, runs locally]
-    E --> DB[(PostgreSQL + pgvector)]
-    U -->|ask / match| API
-    API -->|similarity search| DB
-    DB -->|top-k chunks| API
-    API -->|chunks as cited documents| C[Claude API]
-    C -->|answer + citations / structured JSON| API
+    B[Browser<br/>Next.js] -->|resume file| P["/resume/parse"]
+    B -->|resume + job| A["/analyze"]
+    B -->|resume + job| L["/cover-letter"]
+    A --> C[Claude: structured FitReport]
+    L --> C2[Claude: letter text]
+    subgraph RAG["Optional RAG endpoints"]
+      D["/documents"] --> V[(pgvector)]
+      Q["/ask, /match"] --> V
+      Q --> C3[Claude: answers with citations]
+    end
 ```
 
 **Design choices**
-- **Citations, not just answers.** Retrieved chunks are sent to Claude as document blocks with citations enabled, so every answer links back to the text it came from.
-- **Structured output with Pydantic.** `/extract` and `/match` use the Anthropic SDK's `messages.parse` with Pydantic models, so responses are validated objects, not free text to be parsed.
-- **Local embeddings.** FastEmbed runs the embedding model on CPU: no extra API key and no cost per document.
-- **Refusal handling.** If Claude declines a request, the API returns a clear 422 instead of an empty answer. `/ask` also opts into server-side fallbacks.
-- **Testable by design.** The vector store and LLM are FastAPI dependencies, so tests swap in fakes and run without a database or API key.
+- **One call per analysis.** `/analyze` returns the job facts, match and verdict in a single Claude call using a Pydantic schema, which is faster and cheaper than chaining calls.
+- **Privacy by default.** The web app never stores resumes: `/resume/parse` only returns the text, and the browser keeps it.
+- **Grounded output.** Prompts tell Claude to use only what the resume and posting say and never to invent skills. The RAG endpoints return citations to the exact source text.
+- **Safe to put online.** Daily per-visitor and global limits, input size limits, and a switch to turn off the database endpoints keep a public demo from running up the API bill.
+- **Testable by design.** The LLM, vector store and limiter are FastAPI dependencies, so tests swap in fakes and run without a database or API key.
 
-## Quick start
+## Run it locally
 
-Requirements: Python 3.12, Docker, and an [Anthropic API key](https://console.anthropic.com/).
+You need Python 3.12, Node.js 20+, and an [Anthropic API key](https://console.anthropic.com/).
 
+**1. API**
 ```bash
-# 1. Start PostgreSQL with pgvector
-docker compose up -d
-
-# 2. Install dependencies
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt
-
-# 3. Configure
-cp .env.example .env        # then put your ANTHROPIC_API_KEY in .env
-
-# 4. Run
-uvicorn app.main:app --reload
+cp .env.example .env          # add your ANTHROPIC_API_KEY
+uvicorn app.main:app --reload # http://localhost:8000/docs
 ```
 
-The first request downloads the embedding model (about 100 MB), so it takes a little longer.
-
-**No Docker? Use Supabase.** Any Postgres with pgvector works. Create a Supabase project, enable the `vector` extension (Database → Extensions), and set `DATABASE_URL` in `.env` to the Session pooler connection string, starting with `postgresql+psycopg://`. Then skip step 1.
-
-## Try it
-
+**2. Web app** (in a second terminal)
 ```bash
-# Add the sample resume and job postings
-curl -F "file=@data/resume_alex_tan.md" -F "doc_type=resume" localhost:8000/documents
-curl -F "file=@data/job_ai_engineer.md" -F "doc_type=job" localhost:8000/documents
-curl -F "file=@data/job_backend_go.md" -F "doc_type=job" localhost:8000/documents
-
-# Ask a question (answer comes with citations)
-curl -X POST localhost:8000/ask -H "Content-Type: application/json" \
-  -d '{"question": "Which job requires Thai language?"}'
-
-# Extract a job posting into JSON
-curl -X POST localhost:8000/extract -H "Content-Type: application/json" \
-  -d "{\"job_text\": $(jq -Rs . < data/job_ai_engineer.md)}"
-
-# Score the stored resume against a job
-curl -X POST localhost:8000/match -H "Content-Type: application/json" \
-  -d "{\"job_text\": $(jq -Rs . < data/job_ai_engineer.md)}"
+cd web
+cp .env.example .env.local
+npm install
+npm run dev                   # http://localhost:3000
 ```
+
+Open http://localhost:3000, click **Use a sample resume** and **Try a sample job**, then **Check my fit**.
+
+The fit check and cover letter don't need a database. The optional RAG endpoints (`/documents`, `/ask`, `/match`) need PostgreSQL with pgvector: run `docker compose up -d`, or create a Supabase project, enable the `vector` extension, and set `DATABASE_URL` to its Session pooler connection string (starting with `postgresql+psycopg://`).
+
+## API
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /resume/parse` | PDF/Markdown/text file → resume text (nothing stored) |
+| `POST /analyze` | Resume + job posting → `FitReport`: job facts, fit score, skills, red flags, verdict |
+| `POST /cover-letter` | Resume + job posting (+ name) → tailored cover letter |
+| `GET /usage` | Today's usage and remaining analyses for this visitor |
+| `POST /documents`, `/documents/text` | Chunk, embed and store a document in pgvector |
+| `POST /ask` | Question → retrieved chunks → answer **with citations** |
+| `POST /extract` | Job posting → structured `JobPosting` JSON |
+| `POST /match` | Job posting → fit against stored resumes (RAG) |
+
+Interactive docs: http://localhost:8000/docs
 
 ## Evaluation
 
-`evals/run_eval.py` measures quality on the sample data:
-- **RAG answers:** 10 questions, each graded by required keywords, including two questions the documents *can't* answer, to check that the model says so instead of guessing.
-- **Extraction:** 3 job postings, checking salary, years of experience and Thai-language fields against expected values.
+`evals/run_eval.py` measures quality on the fictional sample data in `data/`:
+- **RAG answers:** 10 questions graded by required keywords, including two the documents *can't* answer, to check the model says so instead of guessing.
+- **Extraction:** 3 job postings, checking salary, years of experience and Thai-language fields.
 
 ```bash
 python -m evals.run_eval --ingest   # first run loads data/ into the store
 python -m evals.run_eval            # later runs
 ```
 
-Results are printed and saved to `evals/results/`. Each run makes about 13 Claude API calls.
+**Latest results** (Oct 2026):
 
-**Latest results** (Claude Sonnet 5.5, Oct 2026):
+| Check | Claude Sonnet 5.5 | Claude Haiku 5.5 |
+|---|---|---|
+| RAG answers (10 questions, incl. 2 the documents can't answer) | **10/10** | **10/10** |
+| Structured extraction (3 job postings) | **3/3** | **3/3** |
+| Fit verdicts on the 3 sample jobs | possible / weak / possible | same |
+| Cost per fit analysis | ~$0.013 | **~$0.001** |
 
-| Check | Score |
-|---|---|
-| RAG answers (10 questions, incl. 2 the documents can't answer) | **10/10 (100%)** |
-| Structured extraction (3 job postings) | **3/3 (100%)** |
+**Choosing the model.** Haiku matched Sonnet on every check above, gave the same verdicts, caught the same deal-breakers (Thai required, relocation, seniority) and wrote equally accurate cover letters at about a twelfth of the cost, so it's the default. Sonnet was slightly more thorough in flagging red flags; switch with `CLAUDE_MODEL=claude-sonnet-5-5`.
 
-The first evaluation run was useful: it showed that the job postings had never been ingested (the model correctly answered "the documents only contain a resume" instead of guessing), and it exposed two weak spots in the keyword grader, which were fixed before this run.
+The first run was useful: it showed the job postings had never been ingested (the model correctly said "the documents only contain a resume" instead of guessing), and it exposed two weak spots in the keyword grader, which were fixed before this run.
 
 ## Tests
 
 ```bash
-pytest -q
+pytest -q                      # API: 22 tests, no database or API key needed
+cd web && npm run lint && npm run build
 ```
 
-Tests use an in-memory store and a fake LLM, so they need no database or API key. GitHub Actions runs them on every push.
+GitHub Actions runs both on every push.
+
+## Deploying a public demo
+
+**API on Render** (or any Python host):
+- Build command: `pip install -r requirements.txt`
+- Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+- Environment variables:
+
+| Variable | Value |
+|---|---|
+| `ANTHROPIC_API_KEY` | your key |
+| `ALLOWED_ORIGINS` | your web app URL, e.g. `https://jobfit-ai.vercel.app` |
+| `DAILY_LIMIT_PER_VISITOR` | `5` |
+| `DAILY_LIMIT_TOTAL` | `100` |
+| `ENABLE_RAG_ENDPOINTS` | `false` |
+| `PYTHON_VERSION` | `3.12.3` |
+
+**Web app on Vercel:** import the repo, set the **Root Directory** to `web`, and set `NEXT_PUBLIC_API_URL` to the API URL.
+
+Also set a monthly spending limit in the Anthropic Console as a final safety net.
 
 ## Configuration
 
-| Variable | Default |
-|---|---|
-| `ANTHROPIC_API_KEY` | required |
-| `CLAUDE_MODEL` | `claude-sonnet-5-5` |
-| `DATABASE_URL` | `postgresql+psycopg://jobfit:jobfit@localhost:6024/jobfit` |
-| `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` |
+| Variable | Default | Purpose |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | (required) | Claude API key |
+| `CLAUDE_MODEL` | `claude-haiku-5-5` | Model used for all calls (`claude-sonnet-5-5` for a little more thoroughness at ~12x the cost) |
+| `ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated web origins allowed to call the API |
+| `DAILY_LIMIT_PER_VISITOR` | `0` (unlimited) | Claude-backed requests per visitor per day |
+| `DAILY_LIMIT_TOTAL` | `0` (unlimited) | Claude-backed requests per day across all visitors |
+| `ENABLE_RAG_ENDPOINTS` | `true` | Set `false` on a public demo |
+| `DATABASE_URL` | local Docker Postgres | Only needed for the RAG endpoints |
+| `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Local embedding model for RAG |
 
 ## Project structure
 
 ```
-app/
-  main.py      FastAPI routes and error handling
-  llm.py       Claude calls: cited answers, structured extraction, matching
-  store.py     LangChain PGVectorStore + FastEmbed embeddings
-  ingest.py    PDF/Markdown text extraction and chunking
-  schemas.py   Pydantic request/response and structured-output models
-evals/         Evaluation cases and runner
-data/          Fictional sample resume and job postings
-tests/         API and ingestion tests
+app/            FastAPI backend
+  main.py         routes, error handling, usage limits
+  llm.py          Claude calls: fit report, cover letter, cited answers, extraction
+  limits.py       daily per-visitor and global limits
+  store.py        LangChain PGVectorStore + FastEmbed embeddings
+  ingest.py       PDF/Markdown text extraction and chunking
+  schemas.py      Pydantic models for requests, responses and structured outputs
+web/            Next.js + Tailwind front end
+evals/          evaluation cases and runner
+data/           fictional sample resume and job postings
+tests/          API and ingestion tests
 ```
 
 ## Roadmap
 
-- Deduplicate documents on re-upload
+- Save analysed jobs and ask questions across them (using the existing RAG endpoints)
 - Hybrid search (keyword + vector)
-- A small Next.js front end
 - LLM-graded evaluation alongside keyword checks

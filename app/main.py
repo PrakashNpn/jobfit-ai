@@ -1,27 +1,46 @@
 from functools import lru_cache
 
 import anthropic
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 
+from .config import settings
 from .ingest import UnsupportedFileError, extract_text, split_into_chunks
+from .limits import DailyLimiter, LimitExceeded, visitor_id
 from .llm import LLM, ClaudeRefusalError, ClaudeService
 from .schemas import (
+    AnalyzeRequest,
     AskRequest,
     AskResponse,
+    CoverLetterRequest,
+    CoverLetterResponse,
     DocType,
     ExtractRequest,
+    FitReport,
     IngestResponse,
     JobPosting,
     MatchRequest,
     MatchResult,
+    ResumeParseResponse,
     TextDocumentRequest,
+    UsageResponse,
 )
 from .store import PgVectorStore, VectorStore
 
 app = FastAPI(
     title="JobFit AI",
-    description="RAG and structured extraction over resumes and job postings.",
-    version="0.1.0",
+    description=(
+        "Paste a job posting and see how well it fits your resume: fit score, key facts, "
+        "matching and missing skills, red flags, and a tailored cover letter."
+    ),
+    version="0.2.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in settings.allowed_origins.split(",") if o.strip()],
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
 )
 
 
@@ -35,12 +54,17 @@ def get_llm() -> LLM:
     return ClaudeService()
 
 
-def _ingest(text: str, source: str, doc_type: DocType, store: VectorStore) -> IngestResponse:
-    chunks = split_into_chunks(text, source=source, doc_type=doc_type.value)
-    if not chunks:
-        raise HTTPException(status_code=422, detail="The document contains no text.")
-    added = store.add(chunks)
-    return IngestResponse(source=source, doc_type=doc_type, chunks_added=added)
+@lru_cache
+def get_limiter() -> DailyLimiter:
+    return DailyLimiter(per_visitor=settings.daily_limit_per_visitor, total=settings.daily_limit_total)
+
+
+def use_quota(request: Request, limiter: DailyLimiter = Depends(get_limiter)) -> None:
+    """Dependency for every endpoint that calls Claude."""
+    try:
+        limiter.consume(visitor_id(request))
+    except LimitExceeded as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
 
 
 def _call_claude(fn, *args):
@@ -49,11 +73,27 @@ def _call_claude(fn, *args):
     except ClaudeRefusalError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except anthropic.RateLimitError as exc:
-        raise HTTPException(status_code=429, detail="Claude rate limit reached, try again shortly.") from exc
+        raise HTTPException(status_code=429, detail="The AI service is busy. Please try again in a minute.") from exc
     except anthropic.APIStatusError as exc:
-        raise HTTPException(status_code=502, detail=f"Claude API error: {exc.message}") from exc
+        raise HTTPException(status_code=502, detail=f"AI service error: {exc.message}") from exc
     except anthropic.APIConnectionError as exc:
-        raise HTTPException(status_code=503, detail="Could not reach the Claude API.") from exc
+        raise HTTPException(status_code=503, detail="Could not reach the AI service.") from exc
+
+
+async def _read_upload(file: UploadFile) -> str:
+    data = await file.read()
+    if len(data) > settings.max_upload_bytes:
+        raise HTTPException(status_code=413, detail="File is too large (max 5 MB).")
+    try:
+        text = extract_text(file.filename or "upload", data).strip()
+    except UnsupportedFileError as exc:
+        raise HTTPException(status_code=415, detail=str(exc)) from exc
+    if not text:
+        raise HTTPException(
+            status_code=422,
+            detail="No text found in this file. If it's a scanned PDF, paste the text instead.",
+        )
+    return text
 
 
 @app.get("/health")
@@ -61,26 +101,63 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-@app.post("/documents", response_model=IngestResponse)
+# ---------- Web app ----------
+
+@app.get("/usage", response_model=UsageResponse)
+def usage(request: Request, limiter: DailyLimiter = Depends(get_limiter)) -> UsageResponse:
+    used = limiter.used(visitor_id(request))
+    limit = limiter.per_visitor or None
+    return UsageResponse(limit=limit, used=used, remaining=max(limit - used, 0) if limit else None)
+
+
+@app.post("/resume/parse", response_model=ResumeParseResponse)
+async def parse_resume(file: UploadFile = File(...)) -> ResumeParseResponse:
+    """Return the text of an uploaded resume. Nothing is stored."""
+    text = await _read_upload(file)
+    text = text[: settings.max_resume_chars]
+    return ResumeParseResponse(filename=file.filename or "resume", text=text, characters=len(text))
+
+
+@app.post("/analyze", response_model=FitReport, dependencies=[Depends(use_quota)])
+def analyze(req: AnalyzeRequest, llm: LLM = Depends(get_llm)) -> FitReport:
+    return _call_claude(llm.analyze, req.resume_text, req.job_text)
+
+
+@app.post("/cover-letter", response_model=CoverLetterResponse, dependencies=[Depends(use_quota)])
+def cover_letter(req: CoverLetterRequest, llm: LLM = Depends(get_llm)) -> CoverLetterResponse:
+    letter = _call_claude(llm.cover_letter, req.resume_text, req.job_text, req.candidate_name)
+    return CoverLetterResponse(cover_letter=letter)
+
+
+# ---------- Document store and RAG (can be switched off for a public demo) ----------
+
+rag = APIRouter(tags=["documents & RAG"])
+
+
+def _ingest(text: str, source: str, doc_type: DocType, store: VectorStore) -> IngestResponse:
+    chunks = split_into_chunks(text, source=source, doc_type=doc_type.value)
+    if not chunks:
+        raise HTTPException(status_code=422, detail="The document contains no text.")
+    added = store.add(chunks)
+    return IngestResponse(source=source, doc_type=doc_type, chunks_added=added)
+
+
+@rag.post("/documents", response_model=IngestResponse)
 async def upload_document(
     file: UploadFile = File(...),
     doc_type: DocType = Form(DocType.other),
     store: VectorStore = Depends(get_store),
 ) -> IngestResponse:
-    data = await file.read()
-    try:
-        text = extract_text(file.filename or "upload", data)
-    except UnsupportedFileError as exc:
-        raise HTTPException(status_code=415, detail=str(exc)) from exc
+    text = await _read_upload(file)
     return _ingest(text, file.filename or "upload", doc_type, store)
 
 
-@app.post("/documents/text", response_model=IngestResponse)
+@rag.post("/documents/text", response_model=IngestResponse)
 def add_text_document(req: TextDocumentRequest, store: VectorStore = Depends(get_store)) -> IngestResponse:
     return _ingest(req.text, req.source, req.doc_type, store)
 
 
-@app.post("/ask", response_model=AskResponse)
+@rag.post("/ask", response_model=AskResponse, dependencies=[Depends(use_quota)])
 def ask(
     req: AskRequest,
     store: VectorStore = Depends(get_store),
@@ -92,12 +169,12 @@ def ask(
     return _call_claude(llm.answer, req.question, chunks)
 
 
-@app.post("/extract", response_model=JobPosting)
+@rag.post("/extract", response_model=JobPosting, dependencies=[Depends(use_quota)])
 def extract(req: ExtractRequest, llm: LLM = Depends(get_llm)) -> JobPosting:
     return _call_claude(llm.extract_job, req.job_text)
 
 
-@app.post("/match", response_model=MatchResult)
+@rag.post("/match", response_model=MatchResult, dependencies=[Depends(use_quota)])
 def match(
     req: MatchRequest,
     store: VectorStore = Depends(get_store),
@@ -111,3 +188,7 @@ def match(
             raise HTTPException(status_code=422, detail="Add a resume first, or pass resume_text.")
         resume_text = "\n\n".join(c.text for c in chunks)
     return _call_claude(llm.match, resume_text, req.job_text)
+
+
+if settings.enable_rag_endpoints:
+    app.include_router(rag)
