@@ -2,11 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import AnalyzingCard from "@/components/AnalyzingCard";
 import CoverLetter from "@/components/CoverLetter";
 import FitResult from "@/components/FitResult";
+import JobInput, { looksLikeLink } from "@/components/JobInput";
 import ResumeInput from "@/components/ResumeInput";
+import Spinner from "@/components/Spinner";
 import { ApiError, analyze, getUsage } from "@/lib/api";
-import { SAMPLE_JOB } from "@/lib/sample";
 import type { FitReport, Resume, Usage } from "@/lib/types";
 
 const RESUME_KEY = "jobfit.resume";
@@ -68,7 +70,8 @@ export default function Home() {
   }
 
   const outOfAnalyses = usage?.remaining === 0;
-  const canAnalyze = !!resume && jobText.trim().length >= 20 && !loading && !outOfAnalyses;
+  const jobIsLink = looksLikeLink(jobText);
+  const canAnalyze = !!resume && jobText.trim().length >= 20 && !jobIsLink && !loading && !outOfAnalyses;
 
   async function runAnalysis() {
     if (!resume) return;
@@ -106,23 +109,7 @@ export default function Home() {
       </Step>
 
       <Step n={2} title="The job posting">
-        <textarea
-          value={jobText}
-          onChange={(e) => setJobText(e.target.value)}
-          rows={10}
-          placeholder="Paste the full job description here: title, requirements, salary, location…"
-          className="w-full rounded-xl border border-slate-300 bg-white p-3 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200"
-        />
-        <p className="mt-2 text-sm text-slate-500">
-          Just looking?{" "}
-          <button
-            type="button"
-            onClick={() => setJobText(SAMPLE_JOB)}
-            className="font-medium text-indigo-600 hover:underline"
-          >
-            Try a sample job
-          </button>
-        </p>
+        <JobInput value={jobText} onChange={setJobText} disabled={loading} />
       </Step>
 
       <div className="space-y-2 text-center">
@@ -130,11 +117,22 @@ export default function Home() {
           type="button"
           onClick={runAnalysis}
           disabled={!canAnalyze}
-          className="w-full rounded-xl bg-indigo-600 px-6 py-3.5 text-base font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto"
+          aria-busy={loading}
+          className={`inline-flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-6 py-3.5 text-base font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:cursor-not-allowed sm:w-auto ${loading ? "" : "disabled:opacity-40"}`}
         >
-          {loading ? "Analyzing… (about 10 seconds)" : "Check my fit"}
+          {loading ? (
+            <>
+              <Spinner className="h-5 w-5" />
+              Checking your fit…
+            </>
+          ) : (
+            "Check my fit"
+          )}
         </button>
         {!resume && <p className="text-sm text-slate-500">Add your resume to get started.</p>}
+        {resume && jobIsLink && (
+          <p className="text-sm text-slate-500">Click “Load job details” first, so we can read the job from the link.</p>
+        )}
         {usage?.limit != null && (
           <p className="text-sm text-slate-500">
             {outOfAnalyses
@@ -145,7 +143,9 @@ export default function Home() {
         {error && <p className="text-sm font-medium text-red-600">{error}</p>}
       </div>
 
-      {report && resume && (
+      {loading && <AnalyzingCard />}
+
+      {report && resume && !loading && (
         <div ref={resultRef} className="space-y-6 scroll-mt-6">
           <Step n={3} title="Your fit">
             <FitResult report={report} />

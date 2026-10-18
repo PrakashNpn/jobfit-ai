@@ -4,6 +4,8 @@ import { useState } from "react";
 
 import { ApiError, writeCoverLetter } from "@/lib/api";
 
+import Spinner from "./Spinner";
+
 type Props = {
   resumeText: string;
   jobText: string;
@@ -49,15 +51,36 @@ export default function CoverLetter({ resumeText, jobText, onUsed }: Props) {
           type="button"
           onClick={generate}
           disabled={loading}
-          className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-60"
+          aria-busy={loading}
+          className="inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:cursor-not-allowed"
         >
-          {loading ? "Writing…" : letter ? "Write another version" : "✉️ Write my cover letter"}
+          {loading ? (
+            <>
+              <Spinner />
+              Writing your letter…
+            </>
+          ) : letter ? (
+            "Write another version"
+          ) : (
+            "✉️ Write my cover letter"
+          )}
         </button>
       </div>
 
       {error && <p className="text-sm text-red-600">{error}</p>}
 
-      {letter && (
+      {loading && (
+        <div role="status" aria-live="polite" className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
+          <p className="text-sm text-slate-500">Writing a letter tailored to this job… about 5 seconds.</p>
+          <div className="space-y-2 motion-safe:animate-pulse">
+            {["w-1/3", "w-full", "w-11/12", "w-full", "w-4/5", "w-full", "w-2/3"].map((width, i) => (
+              <div key={i} className={`h-3 rounded bg-slate-200 ${width}`} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {letter && !loading && (
         <div className="relative">
           <textarea
             value={letter}

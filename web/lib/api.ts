@@ -1,4 +1,4 @@
-import type { FitReport, Resume, Usage } from "./types";
+import type { FetchedJob, FitReport, Resume, Usage } from "./types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -49,6 +49,10 @@ export async function parseResume(file: File): Promise<Resume> {
     body: form,
   });
   return { filename: data.filename, text: data.text };
+}
+
+export function fetchJob(url: string): Promise<FetchedJob> {
+  return postJson<FetchedJob>("/job/fetch", { url });
 }
 
 export function analyze(resumeText: string, jobText: string): Promise<FitReport> {

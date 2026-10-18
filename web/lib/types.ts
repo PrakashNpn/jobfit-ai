@@ -42,3 +42,13 @@ export type Resume = {
   filename: string;
   text: string;
 };
+
+export type FetchedJob = {
+  url: string;
+  title: string;
+  company: string | null;
+  location: string | null;
+  work_type: string | null;
+  salary: string | null;
+  text: string;
+};

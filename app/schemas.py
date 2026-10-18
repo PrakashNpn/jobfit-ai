@@ -118,6 +118,20 @@ class FitReport(BaseModel):
     verdict_reason: str = Field(description="One sentence explaining the verdict, written to the candidate")
 
 
+class JobFetchRequest(BaseModel):
+    url: str = Field(min_length=10, max_length=2000)
+
+
+class JobFetchResponse(BaseModel):
+    url: str
+    title: str
+    company: str | None
+    location: str | None
+    work_type: str | None
+    salary: str | None
+    text: str = Field(description="The full job posting as plain text, ready for /analyze")
+
+
 class CoverLetterRequest(AnalyzeRequest):
     candidate_name: str | None = Field(default=None, max_length=100)
 

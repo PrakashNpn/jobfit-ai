@@ -3,9 +3,10 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from app.jobfetch import FetchedJob, JobFetchError, canonical_job_url
 from app.limits import DailyLimiter
 from app.llm import ClaudeRefusalError
-from app.main import app, get_limiter, get_llm, get_store
+from app.main import app, get_fetch_limiter, get_job_fetcher, get_limiter, get_llm, get_store
 from app.schemas import AskResponse, Chunk, Citation, FitReport, JobPosting, MatchResult
 
 
@@ -72,6 +73,22 @@ class FakeLLM:
         return f"Dear Hiring Team,\n\n...\n\nBest regards,\n{candidate_name or 'Candidate'}"
 
 
+class FakeFetcher:
+    def fetch(self, raw_url):
+        url = canonical_job_url(raw_url)  # real validation, fake network
+        if url.endswith("/job/99999"):
+            raise JobFetchError("This job is no longer advertised on JobsDB.")
+        return FetchedJob(
+            url=url,
+            title="AI Engineer",
+            company="Example Co",
+            location="Bangkok",
+            work_type="Full time",
+            salary=None,
+            description="Requires Python and RAG.",
+        )
+
+
 RESUME = "Full-stack developer with Python, React and RAG experience."
 JOB = "AI Engineer in Bangkok. Requires Python and RAG. 40-50k THB."
 
@@ -82,6 +99,8 @@ def client():
     app.dependency_overrides[get_store] = lambda: store
     app.dependency_overrides[get_llm] = lambda: llm
     app.dependency_overrides[get_limiter] = lambda: DailyLimiter(per_visitor=0, total=0)
+    app.dependency_overrides[get_fetch_limiter] = lambda: DailyLimiter(per_visitor=0, total=0)
+    app.dependency_overrides[get_job_fetcher] = lambda: FakeFetcher()
     with TestClient(app) as c:
         c.store, c.llm = store, llm
         yield c
@@ -142,6 +161,33 @@ def test_daily_limit_total_applies_across_visitors(client):
     body = {"resume_text": RESUME, "job_text": JOB}
     assert client.post("/analyze", json=body, headers={"x-forwarded-for": "1.1.1.1"}).status_code == 200
     assert client.post("/analyze", json=body, headers={"x-forwarded-for": "2.2.2.2"}).status_code == 429
+
+
+def test_fetch_job_from_link(client):
+    res = client.post("/job/fetch", json={"url": "https://th.jobsdb.com/job/95333770/apply?sol=x"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["url"] == "https://th.jobsdb.com/job/95333770"
+    assert body["text"].startswith("AI Engineer\nExample Co\nBangkok · Full time")
+
+
+def test_fetch_job_rejects_other_sites(client):
+    res = client.post("/job/fetch", json={"url": "https://www.linkedin.com/jobs/view/123"})
+    assert res.status_code == 422
+    assert "JobsDB" in res.json()["detail"]
+
+
+def test_fetch_job_reports_expired_post(client):
+    res = client.post("/job/fetch", json={"url": "https://th.jobsdb.com/job/99999"})
+    assert res.status_code == 502
+    assert "no longer advertised" in res.json()["detail"]
+
+
+def test_fetch_does_not_use_analysis_quota(client):
+    analysis = DailyLimiter(per_visitor=1, total=0)
+    app.dependency_overrides[get_limiter] = lambda: analysis
+    client.post("/job/fetch", json={"url": "https://th.jobsdb.com/job/95333770"})
+    assert client.post("/analyze", json={"resume_text": RESUME, "job_text": JOB}).status_code == 200
 
 
 def test_usage_unlimited_by_default(client):

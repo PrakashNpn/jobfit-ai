@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .ingest import UnsupportedFileError, extract_text, split_into_chunks
+from .jobfetch import JobFetchError, JobsDBFetcher, UnsupportedJobUrl
 from .limits import DailyLimiter, LimitExceeded, visitor_id
 from .llm import LLM, ClaudeRefusalError, ClaudeService
 from .schemas import (
@@ -18,6 +19,8 @@ from .schemas import (
     ExtractRequest,
     FitReport,
     IngestResponse,
+    JobFetchRequest,
+    JobFetchResponse,
     JobPosting,
     MatchRequest,
     MatchResult,
@@ -59,12 +62,31 @@ def get_limiter() -> DailyLimiter:
     return DailyLimiter(per_visitor=settings.daily_limit_per_visitor, total=settings.daily_limit_total)
 
 
-def use_quota(request: Request, limiter: DailyLimiter = Depends(get_limiter)) -> None:
-    """Dependency for every endpoint that calls Claude."""
+@lru_cache
+def get_fetch_limiter() -> DailyLimiter:
+    return DailyLimiter(per_visitor=settings.daily_fetch_limit_per_visitor, total=0)
+
+
+@lru_cache
+def get_job_fetcher() -> JobsDBFetcher:
+    return JobsDBFetcher()
+
+
+def _consume(limiter: DailyLimiter, request: Request) -> None:
     try:
         limiter.consume(visitor_id(request))
     except LimitExceeded as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
+
+
+def use_quota(request: Request, limiter: DailyLimiter = Depends(get_limiter)) -> None:
+    """Dependency for every endpoint that calls Claude."""
+    _consume(limiter, request)
+
+
+def use_fetch_quota(request: Request, limiter: DailyLimiter = Depends(get_fetch_limiter)) -> None:
+    """Separate, more generous limit for reading job links (no Claude call)."""
+    _consume(limiter, request)
 
 
 def _call_claude(fn, *args):
@@ -116,6 +138,26 @@ async def parse_resume(file: UploadFile = File(...)) -> ResumeParseResponse:
     text = await _read_upload(file)
     text = text[: settings.max_resume_chars]
     return ResumeParseResponse(filename=file.filename or "resume", text=text, characters=len(text))
+
+
+@app.post("/job/fetch", response_model=JobFetchResponse, dependencies=[Depends(use_fetch_quota)])
+def fetch_job(req: JobFetchRequest, fetcher: JobsDBFetcher = Depends(get_job_fetcher)) -> JobFetchResponse:
+    """Read one JobsDB job page from a pasted link and return its text."""
+    try:
+        job = fetcher.fetch(req.url)
+    except UnsupportedJobUrl as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except JobFetchError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return JobFetchResponse(
+        url=job.url,
+        title=job.title,
+        company=job.company,
+        location=job.location,
+        work_type=job.work_type,
+        salary=job.salary,
+        text=job.as_text()[: settings.max_job_chars],
+    )
 
 
 @app.post("/analyze", response_model=FitReport, dependencies=[Depends(use_quota)])

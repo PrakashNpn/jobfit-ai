@@ -9,7 +9,7 @@ I built this during my own job search. Checking each posting against my resume, 
 ## How it works
 
 1. **Add your resume** once: upload a PDF or paste the text. It stays in your browser and is never stored on the server.
-2. **Paste a job posting.**
+2. **Paste a JobsDB job link**, or the job description from any other site. JobsDB links are read automatically.
 3. **Get your fit report:**
    - a **fit score** (0–100) and a clear verdict: *apply*, *apply and address the gaps*, or *probably skip*
    - the **key facts**: salary, location, work type, years required, and whether Thai or English is required
@@ -27,7 +27,7 @@ I built this during my own job search. Checking each posting against my resume, 
 | API | Python 3.12, FastAPI, Pydantic |
 | AI | Claude (Anthropic API) with structured outputs and citations |
 | RAG | LangChain, PostgreSQL + pgvector (Supabase), FastEmbed local embeddings |
-| Quality | pytest (22 tests), evaluation suite, GitHub Actions CI |
+| Quality | pytest (45 tests), evaluation suite, GitHub Actions CI |
 
 ```mermaid
 flowchart LR
@@ -47,6 +47,7 @@ flowchart LR
 - **One call per analysis.** `/analyze` returns the job facts, match and verdict in a single Claude call using a Pydantic schema, which is faster and cheaper than chaining calls.
 - **Privacy by default.** The web app never stores resumes: `/resume/parse` only returns the text, and the browser keeps it.
 - **Grounded output.** Prompts tell Claude to use only what the resume and posting say and never to invent skills. The RAG endpoints return citations to the exact source text.
+- **Paste a link, not a wall of text.** `/job/fetch` reads one JobsDB job page on request and returns its text for the user to check before analysing. To stay safe it only accepts JobsDB job links, rebuilds the URL from the job ID, refuses redirects that leave JobsDB, and caps time and size. It reads a single public page per request and never crawls. If JobsDB changes its page layout, pasting the text still works.
 - **Safe to put online.** Daily per-visitor and global limits, input size limits, and a switch to turn off the database endpoints keep a public demo from running up the API bill.
 - **Testable by design.** The LLM, vector store and limiter are FastAPI dependencies, so tests swap in fakes and run without a database or API key.
 
@@ -80,6 +81,7 @@ The fit check and cover letter don't need a database. The optional RAG endpoints
 | Endpoint | Purpose |
 |---|---|
 | `POST /resume/parse` | PDF/Markdown/text file → resume text (nothing stored) |
+| `POST /job/fetch` | JobsDB job link → job title, company, location, salary and full description as text |
 | `POST /analyze` | Resume + job posting → `FitReport`: job facts, fit score, skills, red flags, verdict |
 | `POST /cover-letter` | Resume + job posting (+ name) → tailored cover letter |
 | `GET /usage` | Today's usage and remaining analyses for this visitor |
@@ -117,7 +119,7 @@ The first run was useful: it showed the job postings had never been ingested (th
 ## Tests
 
 ```bash
-pytest -q                      # API: 22 tests, no database or API key needed
+pytest -q                      # API: 45 tests, no database, API key or network needed
 cd web && npm run lint && npm run build
 ```
 
@@ -136,6 +138,7 @@ GitHub Actions runs both on every push.
 | `ALLOWED_ORIGINS` | your web app URL, e.g. `https://jobfit-ai.vercel.app` |
 | `DAILY_LIMIT_PER_VISITOR` | `5` |
 | `DAILY_LIMIT_TOTAL` | `100` |
+| `DAILY_FETCH_LIMIT_PER_VISITOR` | `30` |
 | `ENABLE_RAG_ENDPOINTS` | `false` |
 | `PYTHON_VERSION` | `3.12.3` |
 
@@ -152,6 +155,7 @@ Also set a monthly spending limit in the Anthropic Console as a final safety net
 | `ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated web origins allowed to call the API |
 | `DAILY_LIMIT_PER_VISITOR` | `0` (unlimited) | Claude-backed requests per visitor per day |
 | `DAILY_LIMIT_TOTAL` | `0` (unlimited) | Claude-backed requests per day across all visitors |
+| `DAILY_FETCH_LIMIT_PER_VISITOR` | `0` (unlimited) | JobsDB links read per visitor per day |
 | `ENABLE_RAG_ENDPOINTS` | `true` | Set `false` on a public demo |
 | `DATABASE_URL` | local Docker Postgres | Only needed for the RAG endpoints |
 | `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Local embedding model for RAG |

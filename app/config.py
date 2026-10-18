@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     # Usage limits for a public demo (0 = unlimited, the default for local use)
     daily_limit_per_visitor: int = 0
     daily_limit_total: int = 0
+    daily_fetch_limit_per_visitor: int = 0  # job links read per visitor per day
 
 
 settings = Settings()
