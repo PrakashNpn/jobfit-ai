@@ -8,8 +8,8 @@ jobs:
   api:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -22,8 +22,8 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -33,8 +33,9 @@ jobs:
       - run: npx tsc --noEmit
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e # builds the app, then runs the browser tests (desktop + mobile)
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: playwright-traces
           path: web/test-results/
+          if-no-files-found: ignore # an earlier step may fail before any test runs
