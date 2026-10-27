@@ -1,5 +1,7 @@
 // Fictional examples so visitors can try the app in one click.
 
+import type { FitReport } from "./types";
+
 export const SAMPLE_JOB = `AI Engineer — Nimbus Rentals (fictional)
 
 Location: Bangkok (hybrid, 3 days in office)
@@ -48,4 +50,31 @@ Full-Stack Developer — Fictional Learning Co., Bangkok (2025 – present)
 Web Developer — Sample Digital Agency, Yangon (2022 – 2025)
 - Delivered 15+ client websites with React and Node.js.
 - Integrated two payment gateways and a shipping-rate API for e-commerce clients.`,
+};
+
+/** Shown faded before the first check, so visitors see what a report looks like. */
+export const EXAMPLE_REPORT: FitReport = {
+  verdict: "strong",
+  verdict_reason: "Your LLM and RAG projects match the core of this role. Lead with them in your cover letter.",
+  job: {
+    title: "AI Engineer",
+    company: "Nimbus Rentals (example)",
+    location: "Bangkok (hybrid)",
+    work_type: "Full-time",
+    salary_min_thb: 45000,
+    salary_max_thb: 60000,
+    min_years_experience: 2,
+    required_skills: ["Python", "FastAPI", "LLM APIs", "RAG"],
+    nice_to_have_skills: ["Docker"],
+    thai_language_required: false,
+    english_required: true,
+    summary: "Builds AI features for a rental marketplace.",
+  },
+  match: {
+    fit_score: 81,
+    matching_skills: ["LLM APIs", "RAG", "pgvector", "Docker"],
+    missing_skills: ["LangChain"],
+    red_flags: [],
+    summary: "A strong fit on AI skills; LangChain is a nice-to-have you can pick up quickly.",
+  },
 };

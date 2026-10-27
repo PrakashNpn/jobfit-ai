@@ -1,4 +1,4 @@
-import type { FetchedJob, FitReport, Resume, Usage } from "./types";
+import type { FetchedJob, FitReport, JobSearchResult, Resume, Usage } from "./types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -55,23 +55,106 @@ export function fetchJob(url: string): Promise<FetchedJob> {
   return postJson<FetchedJob>("/job/fetch", { url });
 }
 
+/**
+ * Smart job search. The server streams one JSON object per line: progress messages while it works,
+ * then the result (or an error). `onProgress` receives each progress message.
+ */
+export async function searchJobs(
+  resumeText: string,
+  location: string,
+  onProgress: (message: string) => void,
+): Promise<JobSearchResult> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}/jobs/search`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ resume_text: resumeText, location }),
+    });
+  } catch {
+    throw new ApiError("Can't reach the JobFit AI server. Is it running?");
+  }
+  if (!res.ok || !res.body) throw new ApiError(await errorMessage(res));
+
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (value) buffer += value;
+    const lines = buffer.split("\n");
+    buffer = done ? "" : (lines.pop() ?? "");
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const event = JSON.parse(line);
+      if (event.type === "progress") onProgress(event.message);
+      else if (event.type === "error") throw new ApiError(event.message);
+      else if (event.type === "result") return event.data as JobSearchResult;
+    }
+    if (done) break;
+  }
+  throw new ApiError("The search ended without a result. Please try again.");
+}
+
 export function analyze(resumeText: string, jobText: string): Promise<FitReport> {
   return postJson<FitReport>("/analyze", { resume_text: resumeText, job_text: jobText });
 }
 
-export async function writeCoverLetter(
+/**
+ * Stream a cover letter: `onText` receives the full text so far each time a new piece arrives.
+ * Resolves with the finished letter.
+ */
+export async function streamCoverLetter(
   resumeText: string,
   jobText: string,
   candidateName: string,
+  onText: (textSoFar: string) => void,
 ): Promise<string> {
-  const data = await postJson<{ cover_letter: string }>("/cover-letter", {
-    resume_text: resumeText,
-    job_text: jobText,
-    candidate_name: candidateName.trim() || null,
-  });
-  return data.cover_letter;
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}/cover-letter/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        resume_text: resumeText,
+        job_text: jobText,
+        candidate_name: candidateName.trim() || null,
+      }),
+    });
+  } catch {
+    throw new ApiError("Can't reach the JobFit AI server. Is it running?");
+  }
+  if (!res.ok || !res.body) {
+    throw new ApiError(await errorMessage(res));
+  }
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  let text = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    text += value;
+    onText(text);
+  }
+  return text.trim();
 }
 
 export function getUsage(): Promise<Usage> {
   return request<Usage>("/usage", { method: "GET" });
+}
+
+/**
+ * Ping the API until it answers. Free hosting can put the API to sleep; calling this as soon as
+ * the page opens starts it waking while the visitor is still adding their resume.
+ */
+export async function wakeServer(maxWaitMs = 90_000): Promise<boolean> {
+  const deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`${API_URL}/health`, { cache: "no-store" });
+      if (res.ok) return true;
+    } catch {
+      // not up yet
+    }
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+  }
+  return false;
 }

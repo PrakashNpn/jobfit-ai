@@ -1,13 +1,34 @@
 """API tests with an in-memory store and a fake LLM: no database or API key needed."""
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
 from app.jobfetch import FetchedJob, JobFetchError, canonical_job_url
 from app.limits import DailyLimiter
-from app.llm import ClaudeRefusalError
-from app.main import app, get_fetch_limiter, get_job_fetcher, get_limiter, get_llm, get_store
-from app.schemas import AskResponse, Chunk, Citation, FitReport, JobPosting, MatchResult
+from app.llm import ClaudeRefusalError, Discovery
+from app.main import (
+    app,
+    get_fetch_limiter,
+    get_job_fetcher,
+    get_job_index,
+    get_page_fetcher,
+    get_limiter,
+    get_llm,
+    get_search_limiter,
+    get_store,
+)
+from app.schemas import (
+    AskResponse,
+    Chunk,
+    Citation,
+    FitReport,
+    JobPosting,
+    RankedCard,
+    MatchResult,
+    SearchPlan,
+)
 
 
 class FakeStore:
@@ -72,6 +93,49 @@ class FakeLLM:
     def cover_letter(self, resume_text, job_text, candidate_name):
         return f"Dear Hiring Team,\n\n...\n\nBest regards,\n{candidate_name or 'Candidate'}"
 
+    def plan_search(self, resume_text, location):
+        return SearchPlan(
+            roles=["Full Stack Developer", "AI Engineer"], seniority="mid-level",
+            location_label="Bangkok, Thailand", country_code="th", job_sites=["th.jobsdb.com", "linkedin.com"],
+        )
+
+    def discover(self, plan, on_progress):
+        on_progress("Searching: Full Stack Developer jobs Bangkok")
+        return Discovery(results=[
+            ("https://th.jobsdb.com/full-stack-developer-jobs/in-Bangkok", "Full Stack Developer jobs"),
+            ("https://www.linkedin.com/jobs/view/123", "AI Engineer at Beta"),
+        ])
+
+    def rank_cards(self, resume_text, cards, location_label):
+        return [
+            RankedCard(card_id=card_id, title=text.split("\n")[0], company="Acme", location="Bangkok", posted="2 days ago",
+                       age_days=2, fit_score=50 + 10 * i, verdict="possible", reason="ok", deal_breakers=[])
+            for i, (card_id, text) in enumerate(cards)
+        ]
+
+    def stream_cover_letter(self, resume_text, job_text, candidate_name):
+        if self.refuse:
+            raise ClaudeRefusalError("declined")
+        yield "Dear Hiring Team,"
+        yield "\n\nI am applying..."
+        yield f"\n\nBest regards,\n{candidate_name or 'Candidate'}"
+
+
+LISTING_HTML = """<html><body>
+<a href="/job/95000111">Full Stack Developer</a><span>Acme · Bangkok · Listed 2 days ago</span>
+<a href="/job/95000222">Web Developer</a><span>Beta · Bangkok · Listed 3 days ago</span>
+<a href="/job/95000333">QA Engineer</a><span>Gamma · Bangkok · Listed 1 day ago</span>
+</body></html>"""
+
+
+class FakePageFetcher:
+    def get_html(self, url, respect_robots=True):
+        return url, LISTING_HTML
+
+
+class FakeIndex:
+    available = False
+
 
 class FakeFetcher:
     def fetch(self, raw_url):
@@ -101,6 +165,9 @@ def client():
     app.dependency_overrides[get_limiter] = lambda: DailyLimiter(per_visitor=0, total=0)
     app.dependency_overrides[get_fetch_limiter] = lambda: DailyLimiter(per_visitor=0, total=0)
     app.dependency_overrides[get_job_fetcher] = lambda: FakeFetcher()
+    app.dependency_overrides[get_search_limiter] = lambda: DailyLimiter(per_visitor=0, total=0)
+    app.dependency_overrides[get_page_fetcher] = lambda: FakePageFetcher()
+    app.dependency_overrides[get_job_index] = lambda: FakeIndex()
     with TestClient(app) as c:
         c.store, c.llm = store, llm
         yield c
@@ -141,6 +208,28 @@ def test_cover_letter_uses_name(client):
     )
     assert res.status_code == 200
     assert res.json()["cover_letter"].endswith("Thi Han")
+
+
+def test_cover_letter_stream(client):
+    body = {"resume_text": RESUME, "job_text": JOB, "candidate_name": "Thi Han"}
+    with client.stream("POST", "/cover-letter/stream", json=body) as res:
+        assert res.status_code == 200
+        assert res.headers["content-type"].startswith("text/plain")
+        text = "".join(res.iter_text())
+    assert text.startswith("Dear Hiring Team,")
+    assert text.endswith("Thi Han")
+
+
+def test_cover_letter_stream_refusal_is_an_http_error(client):
+    client.llm.refuse = True
+    res = client.post("/cover-letter/stream", json={"resume_text": RESUME, "job_text": JOB})
+    assert res.status_code == 422
+
+
+def test_every_response_has_a_request_id(client):
+    res = client.get("/health")
+    assert len(res.headers["x-request-id"]) == 12
+    assert client.get("/health", headers={"X-Request-ID": "abc123"}).headers["x-request-id"] == "abc123"
 
 
 def test_daily_limit_per_visitor(client):
@@ -187,6 +276,42 @@ def test_fetch_does_not_use_analysis_quota(client):
     analysis = DailyLimiter(per_visitor=1, total=0)
     app.dependency_overrides[get_limiter] = lambda: analysis
     client.post("/job/fetch", json={"url": "https://th.jobsdb.com/job/95333770"})
+    assert client.post("/analyze", json={"resume_text": RESUME, "job_text": JOB}).status_code == 200
+
+
+def search_events(client, location="Bangkok"):
+    with client.stream("POST", "/jobs/search", json={"resume_text": RESUME, "location": location}) as res:
+        assert res.status_code == 200
+        assert res.headers["content-type"].startswith("application/x-ndjson")
+        return [json.loads(line) for line in res.iter_lines() if line]
+
+
+def test_job_search_streams_progress_then_ranked_result(client):
+    events = search_events(client)
+    progress = [e["message"] for e in events if e["type"] == "progress"]
+    assert any(m.startswith("Searching:") for m in progress)
+    result = events[-1]
+    assert result["type"] == "result"
+    jobs = result["data"]["jobs"]
+    assert [j["fit_score"] for j in jobs] == sorted((j["fit_score"] for j in jobs), reverse=True)
+    assert {j["url"] for j in jobs} >= {"https://th.jobsdb.com/job/95000111", "https://www.linkedin.com/jobs/view/123"}
+    assert result["data"]["pages_read"] == ["https://th.jobsdb.com/full-stack-developer-jobs/in-Bangkok"]
+
+
+def test_job_search_errors_arrive_as_an_event(client):
+    def boom(resume_text, location):
+        raise ClaudeRefusalError("declined")
+
+    client.llm.plan_search = boom
+    events = search_events(client)
+    assert events[-1] == {"type": "error", "message": "declined"}
+
+
+def test_job_search_has_its_own_daily_limit(client):
+    limiter = DailyLimiter(per_visitor=1, total=0)
+    app.dependency_overrides[get_search_limiter] = lambda: limiter
+    search_events(client)
+    assert client.post("/jobs/search", json={"resume_text": RESUME, "location": "Bangkok"}).status_code == 429
     assert client.post("/analyze", json={"resume_text": RESUME, "job_text": JOB}).status_code == 200
 
 

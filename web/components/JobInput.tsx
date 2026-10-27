@@ -1,17 +1,20 @@
 "use client";
 
-import { useState } from "react";
+import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
 
 import { ApiError, fetchJob } from "@/lib/api";
 import { SAMPLE_JOB } from "@/lib/sample";
 import type { FetchedJob } from "@/lib/types";
 
 import Spinner from "./Spinner";
+import { btnLink } from "./ui";
 
 type Props = {
   value: string;
   onChange: (text: string) => void;
   disabled?: boolean;
+  /** Shown at the right of the bottom row, e.g. the "Check my fit" button. */
+  action?: ReactNode;
 };
 
 /** True when the box holds a single link rather than a job description. */
@@ -20,10 +23,19 @@ export function looksLikeLink(text: string): boolean {
   return /^(https?:\/\/)?[\w.-]+\.[a-z]{2,}\/\S*$/i.test(t) && !/\s/.test(t);
 }
 
-export default function JobInput({ value, onChange, disabled }: Props) {
+export default function JobInput({ value, onChange, disabled, action }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState<FetchedJob | null>(null);
+  const box = useRef<HTMLTextAreaElement>(null);
+
+  // Grow with the text (up to max-h, then scroll) instead of showing a resize grip.
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [value]);
 
   async function load(url: string) {
     setLoading(true);
@@ -59,22 +71,24 @@ export default function JobInput({ value, onChange, disabled }: Props) {
   const isLink = looksLikeLink(value);
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
       <div className="relative">
         <textarea
+          ref={box}
           value={value}
           onChange={(e) => handleChange(e.target.value)}
           onPaste={handlePaste}
           disabled={disabled || loading}
-          rows={10}
+          rows={5}
+          aria-label="Job posting"
           placeholder={"Paste a JobsDB job link, or the full job description…\n\ne.g. https://th.jobsdb.com/job/95320999"}
-          className="w-full rounded-xl border border-slate-300 bg-white p-3 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200 disabled:bg-slate-50"
+          className="block max-h-[26rem] min-h-[7.5rem] w-full resize-none bg-transparent text-[15px] leading-relaxed text-ink placeholder:text-muted/70 focus:outline-none disabled:opacity-60"
         />
         {loading && (
           <div
             role="status"
             aria-live="polite"
-            className="absolute inset-0 flex items-center justify-center gap-2 rounded-xl bg-white/80 text-sm font-medium text-indigo-700"
+            className="absolute inset-0 flex items-center justify-center gap-2 rounded-xl bg-surface/85 text-sm font-semibold text-brand"
           >
             <Spinner className="h-5 w-5" />
             Loading the job from JobsDB…
@@ -83,21 +97,17 @@ export default function JobInput({ value, onChange, disabled }: Props) {
       </div>
 
       {isLink && !loading && (
-        <div className="flex flex-wrap items-center gap-3 rounded-lg bg-indigo-50 px-3 py-2 text-sm text-indigo-900">
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-brand-soft px-3 py-2 text-sm text-ink">
           <span>That looks like a link.</span>
-          <button
-            type="button"
-            onClick={() => load(value)}
-            className="rounded-md bg-indigo-600 px-3 py-1 font-medium text-white hover:bg-indigo-500"
-          >
+          <button type="button" onClick={() => load(value)} className="rounded-lg bg-brand px-3 py-1 font-semibold text-brand-ink hover:brightness-110">
             Load job details
           </button>
         </div>
       )}
 
       {loaded && (
-        <p className="text-sm text-emerald-700">
-          ✓ Loaded from JobsDB: <span className="font-medium">{loaded.title}</span>
+        <p className="text-xs text-good">
+          ✓ Loaded from JobsDB: <span className="font-semibold">{loaded.title}</span>
           {loaded.company ? ` · ${loaded.company}` : ""}.{" "}
           <a href={loaded.url} target="_blank" rel="noreferrer" className="underline">
             View original
@@ -106,18 +116,17 @@ export default function JobInput({ value, onChange, disabled }: Props) {
         </p>
       )}
 
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {error && <p className="text-sm text-bad">{error}</p>}
 
-      <p className="text-sm text-slate-500">
-        JobsDB links load automatically. For LinkedIn and other sites, paste the description. Just looking?{" "}
-        <button
-          type="button"
-          onClick={() => handleChange(SAMPLE_JOB)}
-          className="font-medium text-indigo-600 hover:underline"
-        >
-          Try a sample job
-        </button>
-      </p>
+      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-3">
+        <p className="text-xs text-muted">
+          JobsDB links load automatically.{" "}
+          <button type="button" onClick={() => handleChange(SAMPLE_JOB)} className={btnLink}>
+            Try a sample job
+          </button>
+        </p>
+        {action}
+      </div>
     </div>
   );
 }

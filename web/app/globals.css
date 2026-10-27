@@ -1,11 +1,77 @@
 @import "tailwindcss";
 
+/* Design direction "Clarity": calm, precise workspace. Deep navy ink, one confident blue,
+   semantic green / amber / red for fit, faint dot-grid ground. Always light, whatever the
+   system setting. Every colour is a token, so components never hard-code one. */
+:root {
+  color-scheme: light;
+  --bg: #f7f8fb;
+  --dot: #dde2ee;
+  --surface: #ffffff;
+  --surface-2: #f1f3f8;
+  --ink: #0d1530;
+  --muted: #5a6380;
+  --line: #e4e7f0;
+  --brand: #2f5bff;
+  --brand-ink: #ffffff;
+  --brand-soft: #eef2ff;
+  --good: #0f8a5f;
+  --good-soft: #e3f6ee;
+  --warn: #a8660a;
+  --warn-soft: #fdf3e1;
+  --bad: #c93a3a;
+  --bad-soft: #fdecec;
+  --shadow: 0 1px 2px rgb(13 21 48 / 0.05), 0 8px 24px rgb(13 21 48 / 0.06);
+}
+
+
 @theme inline {
-  --font-sans: var(--font-geist-sans);
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-brand: var(--brand);
+  --color-brand-ink: var(--brand-ink);
+  --color-brand-soft: var(--brand-soft);
+  --color-good: var(--good);
+  --color-good-soft: var(--good-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-bad: var(--bad);
+  --color-bad-soft: var(--bad-soft);
+  --font-display: var(--font-display), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-sans), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: var(--font-mono), ui-monospace, "SFMono-Regular", monospace;
+  --shadow-panel: var(--shadow);
 }
 
 body {
-  background: var(--color-slate-50);
-  color: var(--color-slate-900);
-  font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+  background-color: var(--bg);
+  background-image: radial-gradient(circle at 1px 1px, var(--dot) 1px, transparent 0);
+  background-size: 22px 22px;
+  color: var(--ink);
+  font-family: var(--font-sans);
+}
+
+h1,
+h2,
+h3 {
+  text-wrap: balance;
+}
+
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

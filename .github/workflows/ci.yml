@@ -30,4 +30,11 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci
       - run: npm run lint
-      - run: npm run build
+      - run: npx tsc --noEmit
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e # builds the app, then runs the browser tests (desktop + mobile)
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-traces
+          path: web/test-results/

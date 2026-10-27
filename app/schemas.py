@@ -144,3 +144,72 @@ class UsageResponse(BaseModel):
     limit: int | None = Field(description="Daily analyses allowed per visitor; null means unlimited")
     used: int
     remaining: int | None
+
+
+# ---------- Smart job search ----------
+
+
+class SearchPlan(BaseModel):
+    """What Claude thinks this candidate should search for, and where."""
+
+    roles: list[str] = Field(description="2 or 3 job titles that best fit the resume, most suitable first")
+    seniority: str = Field(description="junior, mid-level or senior, judged from the resume")
+    location_label: str = Field(description="The location written clearly, e.g. 'Bangkok, Thailand' or 'Remote'")
+    country_code: str | None = Field(description="ISO 3166-1 alpha-2 country code, lowercase (e.g. 'th'); null for remote")
+    job_sites: list[str] = Field(
+        description="3 to 5 job-board domains most used in that location, local boards first, e.g. 'th.jobsdb.com'"
+    )
+
+
+class RankedCard(BaseModel):
+    """One job card from a results page, cleaned up and scored against the resume."""
+
+    card_id: str
+    title: str = Field(description="The job title only, without company or location")
+    company: str | None
+    location: str | None
+    posted: str | None = Field(description="When it was posted, as shown on the card, e.g. '2 days ago'")
+    age_days: int | None = Field(description="Approximate days since it was posted; null if the card doesn't say")
+    fit_score: int = Field(description="0-100")
+    verdict: Literal["strong", "possible", "weak"]
+    reason: str = Field(description="At most 20 words, addressed to the candidate as 'you'")
+    deal_breakers: list[str] = Field(description="Short tags; empty if none")
+
+
+class RankedCards(BaseModel):
+    jobs: list[RankedCard]
+
+
+class FoundJob(BaseModel):
+    url: str
+    site: str
+    title: str
+    company: str | None = None
+    location: str | None = None
+    posted: str | None = None
+    fit_score: int
+    verdict: Literal["strong", "possible", "weak"]
+    reason: str
+    deal_breakers: list[str]
+    summary: str = Field(description="The text shown on the results page, used for a quick fit check")
+
+
+class SearchLink(BaseModel):
+    role: str
+    site: str
+    url: str
+
+
+class JobSearchRequest(BaseModel):
+    resume_text: str = Field(min_length=20, max_length=settings.max_resume_chars)
+    location: str = Field(min_length=2, max_length=80)
+
+
+class JobSearchResult(BaseModel):
+    location_label: str
+    plan: SearchPlan
+    jobs: list[FoundJob]
+    pages_read: list[str]
+    pages_skipped: int = Field(description="Results pages we didn't read (robots.txt or the site blocked us)")
+    index_results: int = Field(default=0, description="Jobs that came from the job-search index (JSearch)")
+    search_links: list[SearchLink]

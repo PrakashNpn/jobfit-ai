@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import Spinner from "./Spinner";
+import { Panel } from "./ui";
 
 const STEPS = [
   "Reading the job posting…",
@@ -22,32 +23,26 @@ export default function AnalyzingCard() {
   }, []);
 
   return (
-    <section
-      role="status"
-      aria-live="polite"
-      className="rounded-2xl border border-indigo-200 bg-white p-6 shadow-sm"
-    >
-      <div className="flex items-center gap-3 text-indigo-700">
+    <Panel role="status" aria-live="polite">
+      <div className="flex items-center gap-3 font-semibold text-brand">
         <Spinner className="h-5 w-5" />
-        <p className="font-medium">{STEPS[step]}</p>
+        <p>{STEPS[step]}</p>
       </div>
-
-      <div className="mt-4 h-1.5 w-full overflow-hidden rounded-full bg-indigo-100">
+      <div className="mt-4 h-1.5 w-full overflow-hidden rounded-full bg-surface-2">
         <div
-          className="h-full rounded-full bg-indigo-500 transition-all duration-[2500ms] ease-linear"
+          className="h-full rounded-full bg-brand transition-all duration-[2500ms] ease-linear"
           style={{ width: `${((step + 1) / STEPS.length) * 90}%` }}
         />
       </div>
-
-      <ul className="mt-4 space-y-1.5 text-sm">
+      <ul className="mt-4 grid gap-1.5 text-sm sm:grid-cols-2">
         {STEPS.map((label, i) => (
-          <li key={label} className={i <= step ? "text-slate-700" : "text-slate-400"}>
-            {i < step ? "✓" : i === step ? "•" : "○"} {label.replace("…", "")}
+          <li key={label} className={i <= step ? "text-ink" : "text-muted/60"}>
+            <span className={i < step ? "text-good" : ""}>{i < step ? "✓" : i === step ? "•" : "○"}</span>{" "}
+            {label.replace("…", "")}
           </li>
         ))}
       </ul>
-
-      <p className="mt-4 text-xs text-slate-500">This usually takes about 10 seconds.</p>
-    </section>
+      <p className="mt-4 text-xs text-muted">This usually takes about 10 seconds.</p>
+    </Panel>
   );
 }

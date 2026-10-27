@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     daily_limit_per_visitor: int = 0
     daily_limit_total: int = 0
     daily_fetch_limit_per_visitor: int = 0  # job links read per visitor per day
+    daily_search_limit_per_visitor: int = 0  # "Find jobs for me" searches per visitor per day
+    daily_search_limit_total: int = 0  # across all visitors (protects API costs and quota)
+
+    # Optional second source for the smart job search (OpenWeb Ninja JSearch)
+    jsearch_api_key: str | None = None
 
 
 settings = Settings()

@@ -1,0 +1,33 @@
+# Render blueprint for the JobFit AI API (public demo settings).
+# Render dashboard → New → Blueprint → pick this repo. You'll be asked for the secret values.
+services:
+  - type: web
+    name: jobfit-ai-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.3
+      - key: ANTHROPIC_API_KEY
+        sync: false # entered in the dashboard, never committed
+      - key: ALLOWED_ORIGINS
+        sync: false # the Vercel URL of the web app, e.g. https://jobfit-ai.vercel.app
+      - key: CLAUDE_MODEL
+        value: claude-haiku-5-5
+      - key: DAILY_LIMIT_PER_VISITOR
+        value: "5"
+      - key: DAILY_LIMIT_TOTAL
+        value: "100"
+      - key: DAILY_FETCH_LIMIT_PER_VISITOR
+        value: "30"
+      - key: DAILY_SEARCH_LIMIT_PER_VISITOR
+        value: "2"
+      - key: DAILY_SEARCH_LIMIT_TOTAL
+        value: "10" # ~$0.05-0.10 each; JSearch (200 requests/month) is only used when job boards block us
+      - key: ENABLE_RAG_ENDPOINTS
+        value: "false"
+      - key: JSEARCH_API_KEY
+        sync: false

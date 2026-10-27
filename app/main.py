@@ -1,14 +1,22 @@
+import json
+import queue
+import threading
 from functools import lru_cache
 
 import anthropic
 from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from .config import settings
 from .ingest import UnsupportedFileError, extract_text, split_into_chunks
 from .jobfetch import JobFetchError, JobsDBFetcher, UnsupportedJobUrl
+from .jsearch import JSearchClient
+from .smartsearch import run_search
+from .webfetch import PoliteFetcher
 from .limits import DailyLimiter, LimitExceeded, visitor_id
 from .llm import LLM, ClaudeRefusalError, ClaudeService
+from .observability import RequestContextMiddleware, log, request_id_var, setup_logging
 from .schemas import (
     AnalyzeRequest,
     AskRequest,
@@ -22,6 +30,7 @@ from .schemas import (
     JobFetchRequest,
     JobFetchResponse,
     JobPosting,
+    JobSearchRequest,
     MatchRequest,
     MatchResult,
     ResumeParseResponse,
@@ -36,14 +45,18 @@ app = FastAPI(
         "Paste a job posting and see how well it fits your resume: fit score, key facts, "
         "matching and missing skills, red flags, and a tailored cover letter."
     ),
-    version="0.2.0",
+    version="1.0.0",
 )
+
+setup_logging()
+app.add_middleware(RequestContextMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in settings.allowed_origins.split(",") if o.strip()],
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID"],
 )
 
 
@@ -81,6 +94,26 @@ def _consume(limiter: DailyLimiter, request: Request) -> None:
 
 def use_quota(request: Request, limiter: DailyLimiter = Depends(get_limiter)) -> None:
     """Dependency for every endpoint that calls Claude."""
+    _consume(limiter, request)
+
+
+@lru_cache
+def get_search_limiter() -> DailyLimiter:
+    return DailyLimiter(per_visitor=settings.daily_search_limit_per_visitor, total=settings.daily_search_limit_total)
+
+
+@lru_cache
+def get_page_fetcher() -> PoliteFetcher:
+    return PoliteFetcher()
+
+
+@lru_cache
+def get_job_index() -> JSearchClient:
+    return JSearchClient(settings.jsearch_api_key)
+
+
+def use_search_quota(request: Request, limiter: DailyLimiter = Depends(get_search_limiter)) -> None:
+    """Smart searches run web searches and several Claude calls, so they get their own, tighter limit."""
     _consume(limiter, request)
 
 
@@ -160,9 +193,73 @@ def fetch_job(req: JobFetchRequest, fetcher: JobsDBFetcher = Depends(get_job_fet
     )
 
 
+@app.post("/jobs/search", dependencies=[Depends(use_search_quota)])
+def search_jobs(
+    req: JobSearchRequest,
+    llm: LLM = Depends(get_llm),
+    fetcher: PoliteFetcher = Depends(get_page_fetcher),
+    index: JSearchClient = Depends(get_job_index),
+) -> StreamingResponse:
+    """Smart job search for any location. Streams NDJSON lines: {"type": "progress", "message"} while it works,
+    then {"type": "result", "data": JobSearchResult} or {"type": "error", "message"}."""
+    events: queue.Queue = queue.Queue()
+    request_id = request_id_var.get()
+
+    def worker():
+        request_id_var.set(request_id)
+        try:
+            result = run_search(
+                req.resume_text, req.location, llm, fetcher,
+                lambda m: events.put({"type": "progress", "message": m}), index,
+            )
+            events.put({"type": "result", "data": result.model_dump()})
+        except ClaudeRefusalError as exc:
+            events.put({"type": "error", "message": str(exc)})
+        except anthropic.APIError:
+            log.exception("smart_search_failed")
+            events.put({"type": "error", "message": "The AI service had a problem. Please try again in a minute."})
+        except Exception:
+            log.exception("smart_search_failed")
+            events.put({"type": "error", "message": "Something went wrong while searching. Please try again."})
+        finally:
+            events.put(None)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    def body():
+        while (event := events.get()) is not None:
+            yield json.dumps(event, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(
+        body(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    )
+
+
 @app.post("/analyze", response_model=FitReport, dependencies=[Depends(use_quota)])
 def analyze(req: AnalyzeRequest, llm: LLM = Depends(get_llm)) -> FitReport:
     return _call_claude(llm.analyze, req.resume_text, req.job_text)
+
+
+@app.post("/cover-letter/stream", dependencies=[Depends(use_quota)])
+def cover_letter_stream(req: CoverLetterRequest, llm: LLM = Depends(get_llm)) -> StreamingResponse:
+    """Stream the cover letter as plain text while Claude writes it."""
+    chunks = llm.stream_cover_letter(req.resume_text, req.job_text, req.candidate_name)
+    # Pull the first piece before responding, so API errors still become proper HTTP errors.
+    first = _call_claude(next, chunks, "")
+
+    def body():
+        yield first
+        try:
+            yield from chunks
+        except Exception:
+            log.exception("cover_letter_stream_interrupted")
+            yield "\n\n[The letter was interrupted. Please try again.]"
+
+    return StreamingResponse(
+        body(),
+        media_type="text/plain; charset=utf-8",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/cover-letter", response_model=CoverLetterResponse, dependencies=[Depends(use_quota)])

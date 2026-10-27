@@ -6,12 +6,29 @@ import { ApiError, parseResume } from "@/lib/api";
 import { SAMPLE_RESUME } from "@/lib/sample";
 import type { Resume } from "@/lib/types";
 
-type Props = {
-  resume: Resume | null;
-  onChange: (resume: Resume | null) => void;
-};
+import Spinner from "./Spinner";
+import { btnLink, btnSecondary, inputCls } from "./ui";
 
-export default function ResumeInput({ resume, onChange }: Props) {
+/** The saved resume, shown compactly in the top bar. */
+export function ResumeChip({ resume, onChange }: { resume: Resume; onChange: (resume: Resume | null) => void }) {
+  const kind = resume.filename.toLowerCase().endsWith(".pdf") ? "PDF" : "TXT";
+  return (
+    <div className="flex min-w-0 items-center gap-2 rounded-full border border-line bg-surface py-1 pl-1 pr-3 text-[13px]">
+      <span className="grid h-6 shrink-0 place-items-center rounded-full bg-brand-soft px-2 font-mono text-[10px] font-semibold text-brand">
+        {kind}
+      </span>
+      <span title={`${resume.text.length.toLocaleString()} characters · saved in this browser only`} className="min-w-0 max-w-[7rem] truncate font-medium text-ink sm:max-w-[14rem]">
+        {resume.filename}
+      </span>
+      <button type="button" onClick={() => onChange(null)} className="shrink-0 font-semibold text-brand hover:underline">
+        Change
+      </button>
+    </div>
+  );
+}
+
+/** Upload or paste a resume (shown until one is saved). */
+export default function ResumeInput({ onChange }: { onChange: (resume: Resume) => void }) {
   const fileInput = useRef<HTMLInputElement>(null);
   const [mode, setMode] = useState<"upload" | "paste">("upload");
   const [pasted, setPasted] = useState("");
@@ -32,35 +49,15 @@ export default function ResumeInput({ resume, onChange }: Props) {
     }
   }
 
-  if (resume) {
-    return (
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
-        <div className="min-w-0">
-          <p className="truncate font-medium text-emerald-900">✓ {resume.filename}</p>
-          <p className="text-sm text-emerald-800">
-            {resume.text.length.toLocaleString()} characters · saved in this browser only
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={() => onChange(null)}
-          className="rounded-lg border border-emerald-300 bg-white px-3 py-1.5 text-sm font-medium text-emerald-900 hover:bg-emerald-100"
-        >
-          Change resume
-        </button>
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-3">
-      <div className="flex gap-1 rounded-lg bg-slate-100 p-1 text-sm font-medium w-fit">
+      <div className="grid grid-cols-2 rounded-xl bg-surface-2 p-1 text-sm">
         {(["upload", "paste"] as const).map((m) => (
           <button
             key={m}
             type="button"
             onClick={() => setMode(m)}
-            className={`rounded-md px-3 py-1.5 ${mode === m ? "bg-white shadow-sm text-slate-900" : "text-slate-600 hover:text-slate-900"}`}
+            className={`rounded-lg px-3 py-1.5 font-medium transition ${mode === m ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink"}`}
           >
             {m === "upload" ? "Upload file" : "Paste text"}
           </button>
@@ -72,50 +69,41 @@ export default function ResumeInput({ resume, onChange }: Props) {
           type="button"
           onClick={() => fileInput.current?.click()}
           disabled={loading}
-          className="flex w-full flex-col items-center gap-1 rounded-xl border-2 border-dashed border-slate-300 bg-white px-4 py-8 text-slate-600 hover:border-indigo-400 hover:bg-indigo-50/40 disabled:opacity-60"
+          className="flex w-full flex-col items-center gap-1 rounded-xl border-2 border-dashed border-line bg-surface-2/50 px-4 py-5 text-muted transition hover:border-brand hover:bg-brand-soft/40 disabled:opacity-60"
         >
-          <span className="font-medium text-slate-900">
+          <span className="flex items-center gap-2 font-semibold text-ink">
+            {loading && <Spinner />}
             {loading ? "Reading your resume…" : "Choose your resume"}
           </span>
-          <span className="text-sm">PDF, Markdown or text · up to 5 MB</span>
+          <span className="text-xs">PDF, Markdown or text · up to 5 MB</span>
         </button>
       ) : (
         <div className="space-y-2">
           <textarea
             value={pasted}
             onChange={(e) => setPasted(e.target.value)}
-            rows={8}
+            rows={7}
             placeholder="Paste the text of your resume here…"
-            className="w-full rounded-xl border border-slate-300 bg-white p-3 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+            className={inputCls}
           />
           <button
             type="button"
             disabled={pasted.trim().length < 20}
             onClick={() => onChange({ filename: "Pasted resume", text: pasted.trim() })}
-            className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+            className={`${btnSecondary} w-full`}
           >
             Use this resume
           </button>
         </div>
       )}
 
-      <input
-        ref={fileInput}
-        type="file"
-        accept=".pdf,.md,.txt"
-        className="hidden"
-        onChange={(e) => handleFile(e.target.files?.[0])}
-      />
+      <input ref={fileInput} type="file" accept=".pdf,.md,.txt" className="hidden" onChange={(e) => handleFile(e.target.files?.[0])} />
 
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {error && <p className="text-sm text-bad">{error}</p>}
 
-      <p className="text-sm text-slate-500">
+      <p className="text-xs text-muted">
         No resume handy?{" "}
-        <button
-          type="button"
-          onClick={() => onChange(SAMPLE_RESUME)}
-          className="font-medium text-indigo-600 hover:underline"
-        >
+        <button type="button" onClick={() => onChange(SAMPLE_RESUME)} className={btnLink}>
           Use a sample resume
         </button>
       </p>
