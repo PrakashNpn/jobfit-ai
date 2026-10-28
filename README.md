@@ -2,7 +2,7 @@
 
 **Upload your resume. Find current jobs that fit you, ranked by fit, or paste any job to see how well it fits, what you're missing, any deal-breakers, and get a tailored cover letter.**
 
-**Live demo:** _coming soon_ · Built with Next.js, FastAPI, Claude and LangChain
+**Live demo: [jobfit-ai-plum.vercel.app](https://jobfit-ai-plum.vercel.app)** (no sign-up; click "Use a sample resume" to try it) · Built with Next.js, FastAPI, Claude and LangChain
 
 ![JobFit AI home page](docs/screenshot-home.png)
 
@@ -168,7 +168,9 @@ python -m evals.run_eval           # LLM evaluation (calls Claude, costs about $
 
 **Web app on Vercel:** import the repo, set **Root Directory** to `web`, and add `NEXT_PUBLIC_API_URL` (the Render URL) and `NEXT_PUBLIC_SITE_URL` (the Vercel URL).
 
-Then set a monthly spending limit in the Anthropic Console, and add a repository **variable** `API_URL` (GitHub → Settings → Secrets and variables → Actions → Variables) set to the Render URL so the keep-alive workflow can ping it.
+Then set a monthly spending limit in the Anthropic Console.
+
+**Keeping the free API awake:** Render's free plan sleeps after 15 minutes without traffic, and the next visitor waits 30–60 s. A free [UptimeRobot](https://uptimerobot.com) monitor on `<API URL>/health` every 5 minutes keeps it awake and emails if it goes down. The `Keep API awake` GitHub workflow is a backup (set the repository **variable** `API_URL` to the Render URL); GitHub runs scheduled workflows on a best-effort basis, often hours apart on quiet repos, so it can't do the job alone.
 
 ## API reference
 

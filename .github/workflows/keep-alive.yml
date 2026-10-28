@@ -2,6 +2,8 @@ name: Keep API awake
 
 # Render's free plan puts the API to sleep after 15 minutes without traffic, and the next
 # visitor waits 30-60 s while it starts. Pinging /health every 10 minutes keeps it awake.
+# GitHub treats schedules as best effort and may run this hours apart on a quiet repo, so an
+# UptimeRobot monitor (every 5 minutes) does the real work; this workflow is the backup.
 # Set the repository variable API_URL (Settings → Secrets and variables → Actions → Variables),
 # e.g. https://jobfit-ai-api.onrender.com. Without it, this workflow does nothing.
 
